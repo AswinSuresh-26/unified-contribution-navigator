@@ -2,7 +2,9 @@ import { NextAuthOptions } from "next-auth";
 import NextAuth from "next-auth";
 import GithubProvider from "next-auth/providers/github";
 import { PrismaAdapter } from "@auth/prisma-adapter";
-import prisma from "@/lib/prisma";
+import { PrismaClient } from "@prisma/client";
+
+const prisma = new PrismaClient();
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -10,6 +12,16 @@ export const authOptions: NextAuthOptions = {
     GithubProvider({
       clientId: process.env.GITHUB_ID!,
       clientSecret: process.env.GITHUB_SECRET!,
+      profile(profile) {
+        return {
+          id: profile.id.toString(),
+          name: profile.name || profile.login,
+          email: profile.email,
+          image: profile.avatar_url,
+          githubId: profile.id.toString(),
+          skills: []
+        };
+      },
     }),
   ],
   secret: process.env.NEXTAUTH_SECRET,
@@ -25,25 +37,19 @@ export const authOptions: NextAuthOptions = {
   },
   callbacks: {
     async session({ session, user }) {
-      if (session.user) {
-        session.user.id = user.id;
-      }
-      return session;
+      return {
+        ...session,
+        user: {
+          ...session.user,
+          id: user.id,
+          githubId: user.githubId,
+          skills: user.skills || []
+        }
+      };
     },
-    async signIn({ user, account, profile }: any) {
-      if (profile?.email) {
-        // Create or update user skills if they don't exist
-        await prisma.user.upsert({
-          where: { email: profile.email },
-          update: {},
-          create: {
-            email: profile.email,
-            name: user.name || '',
-            image: user.image || '',
-            githubId: profile.id.toString(),
-            skills: [] // Initialize with empty skills array
-          },
-        });
+    async signIn({ user, account, profile }) {
+      if (!profile?.email) {
+        return false;
       }
       return true;
     },
