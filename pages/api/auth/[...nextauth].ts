@@ -15,31 +15,40 @@ export const authOptions: NextAuthOptions = {
           scope: 'read:user user:email repo',
         },
       },
+      profile(profile) {
+        return {
+          id: profile.id.toString(),
+          name: profile.name || profile.login,
+          email: profile.email,
+          image: profile.avatar_url,
+          githubId: profile.id.toString(),
+          skills: [],
+        };
+      },
     }),
   ],
   secret: process.env.NEXTAUTH_SECRET,
   session: {
-    strategy: "jwt",
+    strategy: "database",
+    maxAge: 30 * 24 * 60 * 60, // 30 days
+    updateAge: 24 * 60 * 60, // 24 hours
   },
   pages: {
     signIn: '/login',
     error: '/auth/error',
+    newUser: '/profile',
   },
   callbacks: {
-    async jwt({ token, account, profile }) {
-      if (account) {
-        token.accessToken = account.access_token;
-        token.githubId = profile?.sub;
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      if (session.user) {
-        session.user.id = token.sub as string;
-        session.user.githubId = token.githubId as string;
-        session.accessToken = token.accessToken as string;
-      }
-      return session;
+    async session({ session, user }) {
+      return {
+        ...session,
+        user: {
+          ...session.user,
+          id: user.id,
+          githubId: user.githubId,
+          skills: user.skills || [],
+        },
+      };
     },
     async signIn({ user, account, profile }) {
       if (!profile?.email) {
@@ -48,22 +57,34 @@ export const authOptions: NextAuthOptions = {
       }
 
       try {
-        // Update or create user in database
-        await prisma.user.upsert({
+        // Check if user exists
+        const existingUser = await prisma.user.findUnique({
           where: { email: profile.email },
-          create: {
-            email: profile.email,
-            name: user.name || profile.login || '',
-            image: user.image || '',
-            githubId: profile.sub || '',
-            skills: [],
-          },
-          update: {
-            name: user.name || profile.login || '',
-            image: user.image || '',
-            githubId: profile.sub || '',
-          },
         });
+
+        if (!existingUser) {
+          // Create new user
+          await prisma.user.create({
+            data: {
+              email: profile.email,
+              name: user.name || profile.login || '',
+              image: user.image || '',
+              githubId: profile.id.toString(),
+              skills: [],
+            },
+          });
+        } else {
+          // Update existing user
+          await prisma.user.update({
+            where: { email: profile.email },
+            data: {
+              name: user.name || profile.login || '',
+              image: user.image || '',
+              githubId: profile.id.toString(),
+            },
+          });
+        }
+
         return true;
       } catch (error) {
         console.error("Error during sign in:", error);
@@ -75,8 +96,14 @@ export const authOptions: NextAuthOptions = {
     async signIn(message) {
       console.log('User signed in:', message);
     },
-    async signOut(message) {
-      console.log('User signed out:', message);
+    async createUser(message) {
+      console.log('User created:', message);
+    },
+    async linkAccount(message) {
+      console.log('Account linked:', message);
+    },
+    async session(message) {
+      console.log('Session updated:', message);
     },
     async error(message) {
       console.error('Auth error:', message);
@@ -94,6 +121,6 @@ export const authOptions: NextAuthOptions = {
       console.log('NextAuth debug:', code, metadata);
     },
   },
-}
+};
 
 export default NextAuth(authOptions); 
