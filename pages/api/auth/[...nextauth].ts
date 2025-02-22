@@ -2,9 +2,7 @@ import { NextAuthOptions } from "next-auth";
 import NextAuth from "next-auth";
 import GithubProvider from "next-auth/providers/github";
 import { PrismaAdapter } from "@auth/prisma-adapter";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import prisma from "@/lib/prisma";
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -12,46 +10,65 @@ export const authOptions: NextAuthOptions = {
     GithubProvider({
       clientId: process.env.GITHUB_ID!,
       clientSecret: process.env.GITHUB_SECRET!,
-      profile(profile) {
-        return {
-          id: profile.id.toString(),
-          name: profile.name || profile.login,
-          email: profile.email,
-          image: profile.avatar_url,
-          githubId: profile.id.toString(),
-          skills: []
-        };
+      authorization: {
+        params: {
+          scope: 'read:user user:email repo',
+        },
       },
     }),
   ],
   secret: process.env.NEXTAUTH_SECRET,
   session: {
-    strategy: "database",
-    maxAge: 30 * 24 * 60 * 60, // 30 days
-    updateAge: 24 * 60 * 60, // 24 hours
+    strategy: "jwt",
   },
   pages: {
     signIn: '/login',
     error: '/auth/error',
-    newUser: '/profile' // Redirect new users to their profile page
   },
   callbacks: {
-    async session({ session, user }) {
-      return {
-        ...session,
-        user: {
-          ...session.user,
-          id: user.id,
-          githubId: user.githubId,
-          skills: user.skills || []
-        }
-      };
+    async jwt({ token, account, profile }) {
+      if (account) {
+        token.accessToken = account.access_token;
+        token.githubId = profile?.sub;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user) {
+        session.user.id = token.sub as string;
+        session.user.githubId = token.githubId as string;
+        session.accessToken = token.accessToken as string;
+      }
+      return session;
     },
     async signIn({ user, account, profile }) {
       if (!profile?.email) {
+        console.error("No email provided by GitHub");
         return false;
       }
-      return true;
+
+      try {
+        // Update or create user in database
+        await prisma.user.upsert({
+          where: { email: profile.email },
+          create: {
+            email: profile.email,
+            name: user.name || profile.login || '',
+            image: user.image || '',
+            githubId: profile.sub || '',
+            skills: [],
+          },
+          update: {
+            name: user.name || profile.login || '',
+            image: user.image || '',
+            githubId: profile.sub || '',
+          },
+        });
+        return true;
+      } catch (error) {
+        console.error("Error during sign in:", error);
+        return false;
+      }
     },
   },
   events: {
@@ -61,13 +78,22 @@ export const authOptions: NextAuthOptions = {
     async signOut(message) {
       console.log('User signed out:', message);
     },
+    async error(message) {
+      console.error('Auth error:', message);
+    },
   },
   debug: process.env.NODE_ENV === 'development',
-  theme: {
-    colorScheme: "auto",
-    brandColor: "#0070f3", // Next.js blue
-    logo: "", // Add your logo URL here
+  logger: {
+    error: (code, metadata) => {
+      console.error('NextAuth error:', code, metadata);
+    },
+    warn: (code) => {
+      console.warn('NextAuth warning:', code);
+    },
+    debug: (code, metadata) => {
+      console.log('NextAuth debug:', code, metadata);
+    },
   },
-};
+}
 
 export default NextAuth(authOptions); 
